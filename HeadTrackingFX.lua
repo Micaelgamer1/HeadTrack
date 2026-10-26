@@ -17,14 +17,18 @@ local LIMITS = {
 
 local SMOOTH_SPEED = 12 -- maior = cabeça "alcança" a câmera mais rápido (menos suave)
 
-local neck, originalC0, rootPart, rigLimits
+-- Empurra a câmera pra fora da cabeça (é por isso que você via o interior dela).
+-- Offset local: X = lado, Y = altura, Z negativo = pra frente do rosto. Ajusta até sair do mesh.
+local POV_OFFSET = Vector3.new(0, 0.35, -0.4)
+
+local neck, originalC0, rootPart, rigLimits, humanoid
 local currentPitch, currentYaw = 0, 0
 
 local function onCharacterAdded(character)
-	neck, originalC0, rootPart, rigLimits = nil, nil, nil, nil
+	neck, originalC0, rootPart, rigLimits, humanoid = nil, nil, nil, nil, nil
 	currentPitch, currentYaw = 0, 0
 
-	local humanoid = character:WaitForChild("Humanoid")
+	humanoid = character:WaitForChild("Humanoid")
 	local head = character:WaitForChild("Head")
 	rootPart = character:WaitForChild("HumanoidRootPart")
 	neck = head:FindFirstChild("Neck")
@@ -46,12 +50,13 @@ end
 -- 1) usar a CFrame de câmera já atualizada nesse frame
 -- 2) sobrescrever a transparência que o jogo põe na cabeça em primeira pessoa
 RunService:BindToRenderStep("HeadTrackingFX", Enum.RenderPriority.Camera.Value + 1, function(dt)
-	if not (neck and neck.Parent and rootPart and rootPart.Parent and rigLimits) then
+	if not (neck and neck.Parent and rootPart and rootPart.Parent and rigLimits and humanoid) then
 		return
 	end
 
 	local head = neck.Parent
 	head.LocalTransparencyModifier = 0 -- mantém a cabeça visível em 1ª pessoa
+	humanoid.CameraOffset = POV_OFFSET -- tira a câmera de dentro do mesh da cabeça
 
 	local camPitch, camYaw = camera.CFrame:ToOrientation()
 	local _, bodyYaw = rootPart.CFrame:ToOrientation()
