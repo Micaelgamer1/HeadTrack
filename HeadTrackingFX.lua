@@ -1,92 +1,85 @@
--- HeadTrackingFX.lua (v2)
--- Cabeça acompanha a câmera (R6 + R15), com um "ponto de vista" soldado à cabeça
--- pra tirar a câmera de dentro do crânio em primeira pessoa (em vez de forçar a
--- cabeça visível, que foi o que causou o bug de "ver o interior").
-
-local Players = game:GetService("Players")
+--==================================================================
+-- HeadFollowCamera | R6 + R15 | cabeça e corpo seguem a câmera
+-- Só cabeça:      _G.HFC.PesoCorpo = 0
+-- Desligar:       _G.HFC.Ativo = false
+--==================================================================
+local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
-local camera = Workspace.CurrentCamera
 
-local LIMITS = {
-	R6 = { pitchUp = 50, pitchDown = 60, yaw = 70 },
-	R15 = { pitchUp = 50, pitchDown = 60, yaw = 80 },
+local CFG = {
+	Ativo     = true,
+	PitchMax  = math.rad(60),   -- limite pra olhar cima/baixo
+	YawCabeca = math.rad(35),   -- giro extra da cabeça além do corpo
+	YawCorpo  = math.rad(80),   -- limite de torção do corpo
+	PesoCorpo = 1.0,            -- 0 = corpo travado | 1 = corpo acompanha
+	Suavidade = 0.25,           -- 0.05 lento/fluido .. 1 seco
 }
-local SMOOTH_SPEED = 12
+_G.HFC = CFG
 
--- Deslocamento do ponto de vista em relação ao centro da cabeça: pra cima e pra frente,
--- o suficiente pra câmera ficar do lado de fora do crânio. Ajuste se ainda cortar.
-local POV_OFFSET = CFrame.new(0, 0.35, -0.4)
+local rig, conn = {}, nil
+local curPitch, curYaw = 0, 0
 
-local neck, originalC0, rootPart, rigLimits, povPart
-local currentPitch, currentYaw = 0, 0
-
-local function makePovPart(head)
-	local part = Instance.new("Part")
-	part.Name = "Pov"
-	part.Size = Vector3.new(0.05, 0.05, 0.05)
-	part.Transparency = 1
-	part.CanCollide = false
-	part.CanQuery = false
-	part.CanTouch = false
-	part.Massless = true
-	part.CastShadow = false
-	part.CFrame = head.CFrame * POV_OFFSET
-
-	local weld = Instance.new("Weld")
-	weld.Name = "PovHolder"
-	weld.Part0 = head
-	weld.Part1 = part
-	weld.C0 = POV_OFFSET
-	weld.Parent = part
-
-	part.Parent = head
-	return part
+local function acharMotor(char, nome)
+	for _, d in ipairs(char:GetDescendants()) do
+		if d:IsA("Motor6D") and d.Name == nome then return d end
+	end
 end
 
-local function onCharacterAdded(character)
-	neck, originalC0, rootPart, rigLimits, povPart = nil, nil, nil, nil, nil
-	currentPitch, currentYaw = 0, 0
+local function montar(char)
+	rig = {}
+	local pescoco = acharMotor(char, "Neck")
+	if not pescoco then return false end
+	rig.neck     = pescoco
+	rig.neckBase = pescoco.C0        -- guarda a pose original UMA vez
+	-- R15: Waist (LowerTorso->UpperTorso) | R6: RootJoint (HRP->Torso)
+	local corpo = acharMotor(char, "Waist") or acharMotor(char, "RootJoint")
+	if corpo then
+		rig.corpo     = corpo
+		rig.corpoBase = corpo.C0
+	end
+	curPitch, curYaw = 0, 0
+	return true
+end
 
-	local humanoid = character:WaitForChild("Humanoid")
-	local head = character:WaitForChild("Head")
-	rootPart = character:WaitForChild("HumanoidRootPart")
-	neck = head:FindFirstChild("Neck")
-	if not neck then
-		warn("HeadTrackingFX: Neck não encontrado nesse personagem")
-		return
+local function passo()
+	if not CFG.Ativo or not rig.neck then return end
+	local char = player.Character
+	if not char then return end
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	local camera = workspace.CurrentCamera
+	if not hrp or not camera then return end
+
+	-- direção da câmera NO ESPAÇO DO PERSONAGEM
+	local rx, ry = hrp.CFrame:ToObjectSpace(camera.CFrame):ToEulerAnglesYXZ()
+
+	local alvoPitch = math.clamp(rx, -CFG.PitchMax, CFG.PitchMax)
+	local alvoYaw   = math.clamp(ry, -CFG.YawCorpo, CFG.YawCorpo)
+
+	local a = math.clamp(CFG.Suavidade, 0.02, 1)
+	curPitch += (alvoPitch - curPitch) * a
+	curYaw   += (alvoYaw   - curYaw)   * a
+
+	local corpoYaw = 0
+	if rig.corpo then
+		corpoYaw = curYaw * CFG.PesoCorpo
+		rig.corpo.C0 = rig.corpoBase * CFrame.fromEulerAnglesYXZ(0, corpoYaw, 0)
 	end
 
-	originalC0 = neck.C0
-	rigLimits = (humanoid.RigType == Enum.HumanoidRigType.R15) and LIMITS.R15 or LIMITS.R6
-	povPart = makePovPart(head)
+	local yawCabeca = math.clamp(curYaw - corpoYaw, -CFG.YawCabeca, CFG.YawCabeca)
+	rig.neck.C0 = rig.neckBase * CFrame.fromEulerAnglesYXZ(curPitch, yawCabeca, 0)
 end
 
-player.CharacterAdded:Connect(onCharacterAdded)
-if player.Character then
-	onCharacterAdded(player.Character)
-end
-
-RunService:BindToRenderStep("HeadTrackingFX", Enum.RenderPriority.Camera.Value + 1, function(dt)
-	if not (neck and neck.Parent and rootPart and rootPart.Parent and rigLimits and povPart and povPart.Parent) then
-		return
+local function iniciar(char)
+	if not char then return end
+	char:WaitForChild("Head", 10)
+	task.wait(0.2)
+	if montar(char) then
+		if conn then conn:Disconnect() end
+		conn = RunService.RenderStepped:Connect(passo)
 	end
+end
 
-	-- Câmera mira o "Pov" em vez da cabeça/Humanoid padrão
-	camera.CameraSubject = povPart
-
-	local camPitch, camYaw = camera.CFrame:ToOrientation()
-	local _, bodyYaw = rootPart.CFrame:ToOrientation()
-
-	local targetYaw = math.clamp(camYaw - bodyYaw, -math.rad(rigLimits.yaw), math.rad(rigLimits.yaw))
-	local targetPitch = math.clamp(camPitch, -math.rad(rigLimits.pitchDown), math.rad(rigLimits.pitchUp))
-
-	local alpha = math.min(SMOOTH_SPEED * dt, 1)
-	currentYaw += (targetYaw - currentYaw) * alpha
-	currentPitch += (targetPitch - currentPitch) * alpha
-
-	-- Se a cabeça inclinar pro lado errado, inverte o sinal de currentPitch e/ou currentYaw aqui embaixo
-	neck.C0 = originalC0 * CFrame.Angles(currentPitch, currentYaw, 0)
-end)
+iniciar(player.Character)
+player.CharacterAdded:Connect(iniciar)
