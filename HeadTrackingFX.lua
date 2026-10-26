@@ -1,6 +1,7 @@
--- HeadTrackingFX.lua
--- Cabeça do personagem acompanha a câmera (R6 + R15), ficando visível mesmo em primeira pessoa.
--- Ponto de partida pra ajustar ângulo/suavização até bater com o jogo original.
+-- HeadTrackingFX.lua (v2)
+-- Cabeça acompanha a câmera (R6 + R15), com um "ponto de vista" soldado à cabeça
+-- pra tirar a câmera de dentro do crânio em primeira pessoa (em vez de forçar a
+-- cabeça visível, que foi o que causou o bug de "ver o interior").
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -9,26 +10,47 @@ local Workspace = game:GetService("Workspace")
 local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
 
--- Limites de rotação em graus. R15 costuma aguentar um giro de pescoço um pouco maior.
 local LIMITS = {
 	R6 = { pitchUp = 50, pitchDown = 60, yaw = 70 },
 	R15 = { pitchUp = 50, pitchDown = 60, yaw = 80 },
 }
+local SMOOTH_SPEED = 12
 
-local SMOOTH_SPEED = 12 -- maior = cabeça "alcança" a câmera mais rápido (menos suave)
+-- Deslocamento do ponto de vista em relação ao centro da cabeça: pra cima e pra frente,
+-- o suficiente pra câmera ficar do lado de fora do crânio. Ajuste se ainda cortar.
+local POV_OFFSET = CFrame.new(0, 0.35, -0.4)
 
--- Empurra a câmera pra fora da cabeça (é por isso que você via o interior dela).
--- Offset local: X = lado, Y = altura, Z negativo = pra frente do rosto. Ajusta até sair do mesh.
-local POV_OFFSET = Vector3.new(0, 0.35, -0.4)
-
-local neck, originalC0, rootPart, rigLimits, humanoid
+local neck, originalC0, rootPart, rigLimits, povPart
 local currentPitch, currentYaw = 0, 0
 
+local function makePovPart(head)
+	local part = Instance.new("Part")
+	part.Name = "Pov"
+	part.Size = Vector3.new(0.05, 0.05, 0.05)
+	part.Transparency = 1
+	part.CanCollide = false
+	part.CanQuery = false
+	part.CanTouch = false
+	part.Massless = true
+	part.CastShadow = false
+	part.CFrame = head.CFrame * POV_OFFSET
+
+	local weld = Instance.new("Weld")
+	weld.Name = "PovHolder"
+	weld.Part0 = head
+	weld.Part1 = part
+	weld.C0 = POV_OFFSET
+	weld.Parent = part
+
+	part.Parent = head
+	return part
+end
+
 local function onCharacterAdded(character)
-	neck, originalC0, rootPart, rigLimits, humanoid = nil, nil, nil, nil, nil
+	neck, originalC0, rootPart, rigLimits, povPart = nil, nil, nil, nil, nil
 	currentPitch, currentYaw = 0, 0
 
-	humanoid = character:WaitForChild("Humanoid")
+	local humanoid = character:WaitForChild("Humanoid")
 	local head = character:WaitForChild("Head")
 	rootPart = character:WaitForChild("HumanoidRootPart")
 	neck = head:FindFirstChild("Neck")
@@ -39,6 +61,7 @@ local function onCharacterAdded(character)
 
 	originalC0 = neck.C0
 	rigLimits = (humanoid.RigType == Enum.HumanoidRigType.R15) and LIMITS.R15 or LIMITS.R6
+	povPart = makePovPart(head)
 end
 
 player.CharacterAdded:Connect(onCharacterAdded)
@@ -46,22 +69,17 @@ if player.Character then
 	onCharacterAdded(player.Character)
 end
 
--- Roda logo depois do script de câmera padrão do Roblox, pra:
--- 1) usar a CFrame de câmera já atualizada nesse frame
--- 2) sobrescrever a transparência que o jogo põe na cabeça em primeira pessoa
 RunService:BindToRenderStep("HeadTrackingFX", Enum.RenderPriority.Camera.Value + 1, function(dt)
-	if not (neck and neck.Parent and rootPart and rootPart.Parent and rigLimits and humanoid) then
+	if not (neck and neck.Parent and rootPart and rootPart.Parent and rigLimits and povPart and povPart.Parent) then
 		return
 	end
 
-	local head = neck.Parent
-	head.LocalTransparencyModifier = 0 -- mantém a cabeça visível em 1ª pessoa
-	humanoid.CameraOffset = POV_OFFSET -- tira a câmera de dentro do mesh da cabeça
+	-- Câmera mira o "Pov" em vez da cabeça/Humanoid padrão
+	camera.CameraSubject = povPart
 
 	local camPitch, camYaw = camera.CFrame:ToOrientation()
 	local _, bodyYaw = rootPart.CFrame:ToOrientation()
 
-	-- Yaw relativo ao corpo (não ao mundo), senão a cabeça "roda" junto com o personagem inteiro
 	local targetYaw = math.clamp(camYaw - bodyYaw, -math.rad(rigLimits.yaw), math.rad(rigLimits.yaw))
 	local targetPitch = math.clamp(camPitch, -math.rad(rigLimits.pitchDown), math.rad(rigLimits.pitchUp))
 
